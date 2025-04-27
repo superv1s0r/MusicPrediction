@@ -1,2 +1,2 @@
 # MusicPrediction
-Simple XGBoost Music Predictor based on features made by librosa.
+Simple XGBoost Music Genre Classifier based on features made by librosa.
