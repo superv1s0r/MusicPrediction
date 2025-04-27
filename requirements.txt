@@ -1,0 +1,15 @@
+# Core numerics
+numpy==1.26.0
+pandas==2.2.3
+scipy==1.13.0
+
+# Machine‑learning stack
+scikit-learn==1.5.0
+xgboost==2.1.4
+imbalanced-learn==0.12.4
+
+# Hyper‑parameter optimisation, won't be needed though
+optuna==3.5.0
+
+# (No extra lines needed for pathlib or typing—they’re in the Python stdlib)
+joblib==1.4.2
