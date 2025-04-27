@@ -1,6 +1,6 @@
 # MusicPrediction
 
-This project classifies music genres based on audio features extracted using **librosa** (it was done beforehand, you won't have to do it) and trained using **XGBoost**. It utilizes machine learning techniques for feature engineering, model selection, and hyperparameter tuning.
+This project classifies music genres based on audio features extracted using **librosa** (it was done beforehand, you won't have to do it) and trained using **XGBoost**.
 
 ## Project Setup
 
