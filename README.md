@@ -21,9 +21,9 @@ This project classifies music genres based on audio features extracted using **l
    ```
    
 3. **Active the environment**:
-  ```bash
+   ```bash
    source venv/bin/activate
-  ```
+   ```
 
 4. **Install the dependencies**:
    ```bash
