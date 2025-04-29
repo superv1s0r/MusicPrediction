@@ -1,61 +1,25 @@
-"""
-Machine‑learning pipeline template for tabular datasets
-Extended to cover additional edge‑cases:
-  • Loading data
-  • Missing‑value flags
-  • Rare‑category collapsing
-  • Detecting & capping outliers (IQR rule) **inside CV‑safe pipeline**
-  • Skewed‑numeric log/Yeo–Johnson transform
-  • Scaling / normalisation
-  • Optional class imbalance handling (SMOTE‑NC)
-  • Stratified / Group / TimeSeries CV
-  • RandomForest or XGBoost (scikit‑learn API)
-  • Optuna hyper‑parameter optimisation
-  • Calibration, reporting & feature importance
-
-Requires: pandas, numpy, scikit‑learn, xgboost, imbalanced‑learn, optuna, scipy, matplotlib
-"""
-from joblib import Memory
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Tuple, List, Union, Optional
+from typing import Union
 
-from sklearn.model_selection import (
-    train_test_split,
-    StratifiedKFold,
-    GroupKFold,
-    TimeSeriesSplit,
-    cross_validate,
-)
+from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import (
     OneHotEncoder,
     StandardScaler,
     FunctionTransformer,
-    PowerTransformer,
     LabelEncoder
 )
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    classification_report,
-    average_precision_score,
-    roc_auc_score,
-)
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import RandomForestClassifier
-
-from xgboost import XGBClassifier
-from imblearn.over_sampling import SMOTENC
-
-import optuna
+from sklearn.metrics import classification_report
+from sklearn.ensemble import HistGradientBoostingClassifier
 from scipy import stats
 
 RANDOM_STATE = 42
 
-# ---------- helpers ----------
-
+# ---------- Load Data ----------
 def load_data(path: Union[str, Path]) -> pd.DataFrame:
     path = Path(path)
     if path.suffix == ".csv":
@@ -70,15 +34,13 @@ def split_target(df: pd.DataFrame, target: str):
     y = df[target]
     return X, y
 
-# ---------- custom transformers ----------
-
+# ---------- Transformers ----------
 def add_missing_flags(X):
     X = X.copy()
     for col in X.columns:
         if X[col].isna().any():
             X[f"{col}__was_missing"] = X[col].isna().astype(int)
     return X
-
 
 def collapse_rare(min_freq: float = 0.01):
     def _collapser(X):
@@ -88,9 +50,7 @@ def collapse_rare(min_freq: float = 0.01):
             rare = freq[freq < min_freq].index
             X[col] = X[col].where(~X[col].isin(rare), "__OTHER__")
         return X
-
     return FunctionTransformer(_collapser, feature_names_out="one-to-one")
-
 
 def cap_outliers_iqr(factor: float = 1.5):
     def _capper(X):
@@ -101,9 +61,7 @@ def cap_outliers_iqr(factor: float = 1.5):
             lower, upper = q1 - factor * iqr, q3 + factor * iqr
             X[col] = X[col].clip(lower, upper)
         return X
-
     return FunctionTransformer(_capper, feature_names_out="one-to-one")
-
 
 def log_skewed():
     def _log(X):
@@ -112,11 +70,9 @@ def log_skewed():
         for col in skewed[skewed].index:
             X[col] = np.log1p(X[col])
         return X
-
     return FunctionTransformer(_log, feature_names_out="one-to-one")
 
-# ---------- preprocessing constructor ----------
-
+# ---------- Preprocessing ----------
 def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
@@ -134,7 +90,6 @@ def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
         ("encode", OneHotEncoder(handle_unknown="ignore")),
     ])
 
-    # Add missing flags globally first
     pre = make_pipeline(
         FunctionTransformer(add_missing_flags, feature_names_out="one-to-one"),
         ColumnTransformer([
@@ -144,60 +99,14 @@ def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
     )
     return pre
 
-# ---------- imbalance handling ----------
-
-def get_sampler(cat_indices):
-    return SMOTENC(categorical_features=cat_indices, random_state=RANDOM_STATE)
-
-# ---------- model factories ----------
-
-def get_estimator(name: str):
-    if name == "rf":
-        return RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1)
-    return XGBClassifier(random_state=RANDOM_STATE, tree_method="hist", n_jobs=-1, eval_metric="logloss")
-
-# ---------- optuna search ----------
-
-def tune_model(model_name: str, X, y, pre):
-    def objective(trial):
-        if model_name == "rf":
-            params = {
-                "n_estimators": trial.suggest_int("n_estimators", 200, 1000, step=200),
-                "max_depth": trial.suggest_int("max_depth", 3, 20),
-            }
-        else:
-            params = {
-                "n_estimators": trial.suggest_int("n_estimators", 300, 1200, step=300),
-                "max_depth": trial.suggest_int("max_depth", 3, 15),
-                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-            }
-        model = get_estimator(model_name).set_params(**params)
-
-        pipe = Pipeline([("pre", pre), ("clf", model)])
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-        scores = cross_validate(pipe, X, y, cv=cv, scoring="average_precision", n_jobs=-1)
-        return np.mean(scores["test_score"])
-
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=25, show_progress_bar=False)
-    return study.best_params
-
-# ---------- training entrypoint ----------
-
-def train(df: pd.DataFrame, target: str, model_name: str = "rf", cv_type: str = "stratified"):
+# ---------- Training ----------
+def train_fast(df: pd.DataFrame, target: str):
     X, y = split_target(df, target)
-
-    le = LabelEncoder()
-    y = le.fit_transform(y)
+    y = LabelEncoder().fit_transform(y)
 
     pre = build_preprocessor(X)
-
-    best = tune_model(model_name, X, y, pre)
-    base = get_estimator(model_name).set_params(**best)
-    clf = CalibratedClassifierCV(base, method="isotonic", cv=5)
-
-    pipe = Pipeline([("pre", pre), ("clf", clf)])
+    model = HistGradientBoostingClassifier(random_state=RANDOM_STATE)
+    pipe = Pipeline([("pre", pre), ("clf", model)])
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
@@ -207,7 +116,56 @@ def train(df: pd.DataFrame, target: str, model_name: str = "rf", cv_type: str = 
     print(classification_report(y_test, y_pred, digits=4))
     return pipe
 
+# ---------- Run ----------
 if __name__ == "__main__":
     df = load_data("./features_3_sec.csv")
-    model = train(df, target="label", model_name="xgb")
+    model = train_fast(df, target="label")
 
+
+# --------- Different train, includes ROC curve, and confusion_matrix ------------
+def train_fast_and_visualize(df: pd.DataFrame, target: str):
+    X, y = split_target(df, target)
+
+    # Ensure target is encoded consistently
+    label_encoder = LabelEncoder()
+    y_encoded = label_encoder.fit_transform(y)  # Transform target labels into numeric
+
+    # Preprocessing and model pipeline
+    pre = build_preprocessor(X)
+    model = HistGradientBoostingClassifier(random_state=RANDOM_STATE)
+    pipe = Pipeline([("pre", pre), ("clf", model)])
+
+    # Train-test split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y_encoded, test_size=0.2, stratify=y_encoded, random_state=RANDOM_STATE
+    )
+
+    # Fit the pipeline
+    pipe.fit(X_train, y_train)
+
+    # Predictions
+    y_pred_encoded = pipe.predict(X_test)
+
+    # Inverse transform predictions to original genre names
+    y_pred_original = label_encoder.inverse_transform(y_pred_encoded)
+
+    # Inverse transform actual test labels to original genre names for reporting
+    y_test_original = label_encoder.inverse_transform(y_test)
+
+    # Classification Report
+    print(classification_report(y_test_original, y_pred_original, digits=4))
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_test_original, y_pred_original)
+    disp_cm = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=label_encoder.classes_)
+    disp_cm.plot(cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix')
+    plt.show()
+
+    # ROC Curve
+    fpr, tpr, _ = roc_curve(y_test_encoded, pipe.predict_proba(X_test)[:, 1])
+    roc_disp = RocCurveDisplay(fpr=fpr, tpr=tpr).plot()
+    plt.title('ROC Curve')
+    plt.show()
+
+    return pipe, label_encoder
