@@ -1,7 +1,6 @@
 # MusicPrediction
 
-This project classifies music genres based on audio features extracted using **librosa** (it was done beforehand, you won't have to do it) and trained using **XGBoost**.
-
+This project classifies music genres based on audio features extracted using **librosa** (already done for you), and it was trained using **XGBoost**. I built it while preparing for OGAthon 3.0.
 ## Project Setup
 
 ### Prerequisites:
